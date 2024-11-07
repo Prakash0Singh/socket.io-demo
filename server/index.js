@@ -1,125 +1,56 @@
 const httpServer = require("http").createServer();
-const Redis = require("ioredis");
-const redisClient = new Redis();
 const io = require("socket.io")(httpServer, {
   cors: {
-    origin: "http://localhost:8080",
+    // origin: "https://verbose-garbanzo-6wqw4vw66x52rqxj-8080.app.github.dev/",
+    origin:"*",
+    methods: ["GET", "POST"],  // Allow specific HTTP methods (optional, but recommended)
+    allowedHeaders: ["Content-Type"],  // Specify allowed headers (optional)
+    credentials: true,  // Allow credentials (optional, based on your use case)
   },
-  adapter: require("socket.io-redis")({
-    pubClient: redisClient,
-    subClient: redisClient.duplicate(),
-  }),
 });
 
-const { setupWorker } = require("@socket.io/sticky");
-const crypto = require("crypto");
-const randomId = () => crypto.randomBytes(8).toString("hex");
-
-const { RedisSessionStore } = require("./sessionStore");
-const sessionStore = new RedisSessionStore(redisClient);
-
-const { RedisMessageStore } = require("./messageStore");
-const messageStore = new RedisMessageStore(redisClient);
-
-io.use(async (socket, next) => {
-  const sessionID = socket.handshake.auth.sessionID;
-  if (sessionID) {
-    const session = await sessionStore.findSession(sessionID);
-    if (session) {
-      socket.sessionID = sessionID;
-      socket.userID = session.userID;
-      socket.username = session.username;
-      return next();
-    }
-  }
+io.use((socket, next) => {
   const username = socket.handshake.auth.username;
   if (!username) {
     return next(new Error("invalid username"));
   }
-  socket.sessionID = randomId();
-  socket.userID = randomId();
   socket.username = username;
   next();
 });
 
-io.on("connection", async (socket) => {
-  // persist session
-  sessionStore.saveSession(socket.sessionID, {
-    userID: socket.userID,
-    username: socket.username,
-    connected: true,
-  });
-
-  // emit session details
-  socket.emit("session", {
-    sessionID: socket.sessionID,
-    userID: socket.userID,
-  });
-
-  // join the "userID" room
-  socket.join(socket.userID);
-
+io.on("connection", (socket) => {
   // fetch existing users
   const users = [];
-  const [messages, sessions] = await Promise.all([
-    messageStore.findMessagesForUser(socket.userID),
-    sessionStore.findAllSessions(),
-  ]);
-  const messagesPerUser = new Map();
-  messages.forEach((message) => {
-    const { from, to } = message;
-    const otherUser = socket.userID === from ? to : from;
-    if (messagesPerUser.has(otherUser)) {
-      messagesPerUser.get(otherUser).push(message);
-    } else {
-      messagesPerUser.set(otherUser, [message]);
-    }
-  });
-
-  sessions.forEach((session) => {
+  for (let [id, socket] of io.of("/").sockets) {
     users.push({
-      userID: session.userID,
-      username: session.username,
-      connected: session.connected,
-      messages: messagesPerUser.get(session.userID) || [],
+      userID: id,
+      username: socket.username,
     });
-  });
+  }
   socket.emit("users", users);
 
   // notify existing users
   socket.broadcast.emit("user connected", {
-    userID: socket.userID,
+    userID: socket.id,
     username: socket.username,
-    connected: true,
-    messages: [],
   });
 
-  // forward the private message to the right recipient (and to other tabs of the sender)
+  // forward the private message to the right recipient
   socket.on("private message", ({ content, to }) => {
-    const message = {
+    socket.to(to).emit("private message", {
       content,
-      from: socket.userID,
-      to,
-    };
-    socket.to(to).to(socket.userID).emit("private message", message);
-    messageStore.saveMessage(message);
+      from: socket.id,
+    });
   });
 
   // notify users upon disconnection
-  socket.on("disconnect", async () => {
-    const matchingSockets = await io.in(socket.userID).allSockets();
-    const isDisconnected = matchingSockets.size === 0;
-    if (isDisconnected) {
-      // notify other users
-      socket.broadcast.emit("user disconnected", socket.userID);
-      // update the connection status of the session
-      sessionStore.saveSession(socket.sessionID, {
-        userID: socket.userID,
-        username: socket.username,
-        connected: false,
-      });
-    }
+  socket.on("disconnect", () => {
+    socket.broadcast.emit("user disconnected", socket.id);
   });
 });
 
-setupWorker(io);
+const PORT = process.env.PORT || 3000;
+
+httpServer.listen(PORT, () =>
+  console.log(`server listening at http://localhost:${PORT}`)
+);

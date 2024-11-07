@@ -68,28 +68,18 @@ export default {
     });
 
     const initReactiveProperties = (user) => {
+      user.connected = true;
+      user.messages = [];
       user.hasNewMessages = false;
     };
 
     socket.on("users", (users) => {
       users.forEach((user) => {
-        user.messages.forEach((message) => {
-          message.fromSelf = message.from === socket.userID;
-        });
-        for (let i = 0; i < this.users.length; i++) {
-          const existingUser = this.users[i];
-          if (existingUser.userID === user.userID) {
-            existingUser.connected = user.connected;
-            existingUser.messages = user.messages;
-            return;
-          }
-        }
-        user.self = user.userID === socket.userID;
+        user.self = user.userID === socket.id;
         initReactiveProperties(user);
-        this.users.push(user);
       });
       // put the current user first, and sort by username
-      this.users.sort((a, b) => {
+      this.users = users.sort((a, b) => {
         if (a.self) return -1;
         if (b.self) return 1;
         if (a.username < b.username) return -1;
@@ -98,13 +88,6 @@ export default {
     });
 
     socket.on("user connected", (user) => {
-      for (let i = 0; i < this.users.length; i++) {
-        const existingUser = this.users[i];
-        if (existingUser.userID === user.userID) {
-          existingUser.connected = true;
-          return;
-        }
-      }
       initReactiveProperties(user);
       this.users.push(user);
     });
@@ -119,14 +102,13 @@ export default {
       }
     });
 
-    socket.on("private message", ({ content, from, to }) => {
+    socket.on("private message", ({ content, from }) => {
       for (let i = 0; i < this.users.length; i++) {
         const user = this.users[i];
-        const fromSelf = socket.userID === from;
-        if (user.userID === (fromSelf ? to : from)) {
+        if (user.userID === from) {
           user.messages.push({
             content,
-            fromSelf,
+            fromSelf: false,
           });
           if (user !== this.selectedUser) {
             user.hasNewMessages = true;
